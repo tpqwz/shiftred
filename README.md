@@ -1,6 +1,6 @@
 # shiftred
 
-**Version 0.9.0-beta** (late beta)
+**Version 0.9.1-beta** (late beta)
 
 Portable single-file C rewrite of the [redshifter](https://github.com/wizetek/bash/blob/master/redshifter) bash wrapper for [redshift](http://jonls.dk/redshift/).
 
@@ -13,13 +13,13 @@ This project renames the tool to **shiftred** to clearly differentiate it from t
 ## Features
 
 - Single-file C source (`shiftred.c`)
-- Versioned: `0.9.0-beta` (late beta)
+- Versioned: `0.9.1-beta` (late beta)
 - TCC-friendly and **cosmocc**-friendly (Actually Portable Executables)
 - Aims for practical compliance with the SEI CERT C Secure Coding Standard
 - Static portable binary possible; APE binary runs on Linux/macOS/Windows/FreeBSD/etc.
 - Identical CLI and config behavior to the original redshifter
-- Config stored in `~/.config/shiftred`
-- Configurable redshift binary path
+- Config stored in `~/.config/shiftred` (created with mode 0600)
+- Configurable redshift binary path (validated)
 - `-v` / `--version` flag
 
 ## Configuration
@@ -33,6 +33,8 @@ redshift_path=/usr/local/bin/redshift   # optional; defaults to /usr/bin/redshif
 ```
 
 You can also override the path with the environment variable `REDSHIFT_PATH`.
+
+The path is validated: it must be a non-empty string without control characters and must be executable by the current process (`access(..., X_OK)`). Invalid paths fall back to `/usr/bin/redshift` with a warning. The config file is created with mode 0600.
 
 ## Usage
 
@@ -85,7 +87,7 @@ tcc -std=c99 -O2 -o shiftred shiftred.c -lm
 gcc -std=c99 -O2 -static -o shiftred shiftred.c -lm
 ```
 
-**Note:** The redshift binary path is configurable via `redshift_path=` in the config file or the `REDSHIFT_PATH` environment variable. Default is `/usr/bin/redshift`.
+**Note:** The redshift binary path is configurable via `redshift_path=` in the config file or the `REDSHIFT_PATH` environment variable. Default is `/usr/bin/redshift`. The path is validated before use.
 
 ## CI / Releases
 
@@ -95,8 +97,6 @@ GitHub Actions (`.github/workflows/build.yml`):
 - On version tags (`v*` or `0.*`), automatically creates a **GitHub Release** (prerelease for beta) and attaches:
   - `shiftred.com` (Actually Portable Executable)
   - `shiftred-static` (static Linux binary)
-
-Current release tag: `v0.9.0-beta`.
 
 ## License
 

@@ -1,6 +1,6 @@
 /* shiftred.c - Portable C rewrite of the redshifter bash wrapper
  *
- * Version: 0.9.0-beta (late beta)
+ * Version: 0.9.1-beta (late beta)
  *
  * Single-file, TCC-friendly / cosmocc-friendly, aims for CERT C Secure Coding Standard
  * compliance (SEI CERT C, as many rules as practical in a small utility).
@@ -25,28 +25,58 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 
 /* CERT DCL00-C: avoid magic numbers */
-#define VERSION      "0.9.0-beta"
-#define CONF_DIR     ".config"
-#define PROG_NAME    "shiftred"
-#define DEFAULT_REDSHIFT "/usr/bin/redshift"
-#define TEMP_STEP    100
-#define BRIGHT_STEP  0.02
-#define MIN_TEMP     1000
-#define MAX_TEMP     25000
-#define MIN_BRIGHT   0.1
-#define MAX_BRIGHT   1.0
-#define PRESET_COUNT 8
-#define MAX_PATH     4096
-#define BUF_SIZE     256
+#define VERSION           "0.9.1-beta"
+#define CONF_DIR          ".config"
+#define PROG_NAME         "shiftred"
+#define DEFAULT_REDSHIFT  "/usr/bin/redshift"
+#define TEMP_STEP         100
+#define BRIGHT_STEP       0.02
+#define MIN_TEMP          1000
+#define MAX_TEMP          25000
+#define MIN_BRIGHT        0.1
+#define MAX_BRIGHT        1.0
+#define PRESET_COUNT      8
+#define MAX_PATH          4096
+#define BUF_SIZE          256
+#define CONF_MODE         0600
 
 static const int presets[PRESET_COUNT] = {
     6500, 5500, 4200, 3400, 2700, 2300, 1900, 1200
 };
+
+/* Bounds-checked copy. Always null-terminates on success.
+ * Returns 0 on success, -1 if src is too long or invalid. */
+static int safe_copy(char *dst, size_t dstsize, const char *src)
+{
+    if (dst == NULL || src == NULL || dstsize == 0) return -1;
+    size_t len = strlen(src);
+    if (len >= dstsize) return -1;
+    memcpy(dst, src, len + 1);
+    return 0;
+}
+
+/* Reject paths that are empty, too long, contain control characters,
+ * or are not executable by the current process. */
+static int validate_redshift_path(const char *path)
+{
+    if (path == NULL || *path == '\0') return -1;
+    size_t len = strlen(path);
+    if (len == 0 || len >= MAX_PATH) return -1;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)path[i];
+        if (c < 0x20 || c == 0x7f) return -1; /* control chars / DEL */
+    }
+    if (access(path, X_OK) != 0) return -1;
+    return 0;
+}
 
 /* CERT STR31-C / STR07-C style bounds-checked path construction */
 static int build_conf_path(char *buf, size_t buflen,
@@ -58,15 +88,16 @@ static int build_conf_path(char *buf, size_t buflen,
     return 0;
 }
 
-/* Load simple key=value config. Invalid values are ignored (CERT ERR33-C). */
-static void load_config(const char *path, int *temp, double *bright, char *redshift_path, size_t pathlen)
+/* Load simple key=value config. Invalid values are ignored with a warning. */
+static void load_config(const char *path, int *temp, double *bright,
+                        char *redshift_path, size_t pathlen)
 {
     *temp   = MAX_TEMP;
     *bright = MAX_BRIGHT;
-    /* Default redshift path */
     if (pathlen > 0) {
-        strncpy(redshift_path, DEFAULT_REDSHIFT, pathlen - 1);
-        redshift_path[pathlen - 1] = '\0';
+        if (safe_copy(redshift_path, pathlen, DEFAULT_REDSHIFT) != 0) {
+            redshift_path[0] = '\0';
+        }
     }
 
     FILE *f = fopen(path, "r");
@@ -74,42 +105,70 @@ static void load_config(const char *path, int *temp, double *bright, char *redsh
 
     char line[BUF_SIZE];
     while (fgets(line, sizeof(line), f) != NULL) {
-        /* strip trailing newline */
         size_t len = strlen(line);
         if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
 
         if (strncmp(line, "colortemp=", 10) == 0) {
             char *end = NULL;
             long v = strtol(line + 10, &end, 10);
-            if (end != line + 10 && v >= MIN_TEMP && v <= MAX_TEMP)
+            if (end != line + 10 && *end == '\0' &&
+                v >= MIN_TEMP && v <= MAX_TEMP) {
                 *temp = (int)v;
+            } else {
+                fprintf(stderr, "warning: ignoring invalid colortemp in config\n");
+            }
         } else if (strncmp(line, "brightness=", 11) == 0) {
             char *end = NULL;
             double v = strtod(line + 11, &end);
-            if (end != line + 11 && v >= MIN_BRIGHT && v <= MAX_BRIGHT)
+            if (end != line + 11 && *end == '\0' &&
+                isfinite(v) && v >= MIN_BRIGHT && v <= MAX_BRIGHT) {
                 *bright = v;
+            } else {
+                fprintf(stderr, "warning: ignoring invalid brightness in config\n");
+            }
         } else if (strncmp(line, "redshift_path=", 14) == 0) {
             const char *val = line + 14;
             if (*val != '\0' && pathlen > 0) {
-                strncpy(redshift_path, val, pathlen - 1);
-                redshift_path[pathlen - 1] = '\0';
+                if (safe_copy(redshift_path, pathlen, val) != 0) {
+                    fprintf(stderr, "warning: redshift_path in config too long; ignoring\n");
+                }
             }
         }
     }
     fclose(f);
 
-    /* Environment override (highest priority) */
+    /* Environment override (highest priority), still validated later */
     const char *env = getenv("REDSHIFT_PATH");
     if (env != NULL && *env != '\0' && pathlen > 0) {
-        strncpy(redshift_path, env, pathlen - 1);
-        redshift_path[pathlen - 1] = '\0';
+        if (safe_copy(redshift_path, pathlen, env) != 0) {
+            fprintf(stderr, "warning: REDSHIFT_PATH too long; ignoring\n");
+            /* fall back to default if copy failed */
+            safe_copy(redshift_path, pathlen, DEFAULT_REDSHIFT);
+        }
+    }
+
+    /* Final validation of the chosen path */
+    if (validate_redshift_path(redshift_path) != 0) {
+        fprintf(stderr, "warning: redshift path '%s' is not executable; falling back to %s\n",
+                redshift_path[0] ? redshift_path : "(empty)", DEFAULT_REDSHIFT);
+        safe_copy(redshift_path, pathlen, DEFAULT_REDSHIFT);
+        if (validate_redshift_path(redshift_path) != 0) {
+            fprintf(stderr, "error: default redshift path also not executable\n");
+            /* leave it; run_redshift will fail cleanly */
+        }
     }
 }
 
-static int save_config(const char *path, int temp, double bright, const char *redshift_path)
+static int save_config(const char *path, int temp, double bright,
+                       const char *redshift_path)
 {
-    FILE *f = fopen(path, "w");
-    if (f == NULL) return -1;
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, CONF_MODE);
+    if (fd < 0) return -1;
+    FILE *f = fdopen(fd, "w");
+    if (f == NULL) {
+        close(fd);
+        return -1;
+    }
     int rc = fprintf(f, "colortemp=%d\nbrightness=%.2f\n", temp, bright);
     if (redshift_path != NULL && strcmp(redshift_path, DEFAULT_REDSHIFT) != 0)
         rc = fprintf(f, "redshift_path=%s\n", redshift_path);
@@ -120,6 +179,8 @@ static int save_config(const char *path, int temp, double bright, const char *re
 /* CERT ENV33-C: avoid system() with shell. Use fork/exec. */
 static int run_redshift(const char *bin, int temp, double bright)
 {
+    if (bin == NULL || *bin == '\0') return -1;
+
     pid_t pid = fork();
     if (pid < 0) return -1;
 
@@ -174,8 +235,8 @@ static void show_help(const char *prog)
     printf("  +\t\tincrease brightness by 0.02\n");
     printf("  0.1-1.0\tset specific brightness value\n");
     printf("  /\t\treset to default\n\n");
-    printf("Config: ~/.config/shiftred (or REDSHIFT_PATH env)\n");
-    printf("  redshift_path=/path/to/redshift   # optional\n");
+    printf("Config: ~/.config/shiftred (mode 0600) or REDSHIFT_PATH env\n");
+    printf("  redshift_path=/path/to/redshift   # must be executable\n");
 }
 
 int main(int argc, char **argv)
@@ -224,8 +285,10 @@ int main(int argc, char **argv)
             char *end = NULL;
             double v = strtod(argv[2], &end);
             if (end != argv[2] && *end == '\0' &&
-                v >= MIN_BRIGHT && v <= MAX_BRIGHT) {
+                isfinite(v) && v >= MIN_BRIGHT && v <= MAX_BRIGHT) {
                 set_bright = v;
+            } else {
+                fprintf(stderr, "warning: ignoring invalid brightness argument '%s'\n", argv[2]);
             }
         }
     }
@@ -249,6 +312,7 @@ int main(int argc, char **argv)
                 v >= MIN_TEMP && v <= MAX_TEMP) {
                 set_temp = (int)v;
             } else {
+                fprintf(stderr, "error: invalid color temperature '%s'\n", argv[1]);
                 show_help(base);
                 return 1;
             }
@@ -261,15 +325,16 @@ int main(int argc, char **argv)
         set_temp = cycle_temp(set_temp);
     }
 
-    /* Final clamps (CERT INT30-C / INT31-C spirit) */
+    /* Final clamps (CERT INT30-C / INT31-C spirit) + finite check */
     if (set_temp < MIN_TEMP) set_temp = MIN_TEMP;
     if (set_temp > MAX_TEMP) set_temp = MAX_TEMP;
-    if (set_bright < MIN_BRIGHT) set_bright = MIN_BRIGHT;
+    if (!isfinite(set_bright) || set_bright < MIN_BRIGHT) set_bright = MIN_BRIGHT;
     if (set_bright > MAX_BRIGHT) set_bright = MAX_BRIGHT;
 
     int rc = run_redshift(redshift_path, set_temp, set_bright);
     if (rc != 0) {
-        fprintf(stderr, "redshift failed or not found at '%s' (exit %d)\n", redshift_path, rc);
+        fprintf(stderr, "redshift failed or not found at '%s' (exit %d)\n",
+                redshift_path, rc);
     }
 
     if (save_config(conf_path, set_temp, set_bright, redshift_path) != 0) {
