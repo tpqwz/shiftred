@@ -20,17 +20,39 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip gcc make
+          sudo apt-get install -y curl unzip gcc make
 
-      - name: Download cosmocc
+      - name: Download cosmocc (optional, best-effort)
+        id: cosmocc
+        continue-on-error: true
         run: |
           mkdir -p cosmocc
           cd cosmocc
-          wget -q https://cosmo.zip/pub/cosmocc/cosmocc.zip
-          unzip -q cosmocc.zip
-          chmod +x bin/cosmocc
+          # Prefer versioned release; fall back to latest
+          curl -L --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+            -o cosmocc.zip https://cosmo.zip/pub/cosmocc/cosmocc-4.0.2.zip || \
+          curl -L --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+            -o cosmocc.zip https://github.com/jart/cosmopolitan/releases/download/4.0.2/cosmocc-4.0.2.zip || \
+          curl -L --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+            -o cosmocc.zip https://cosmo.zip/pub/cosmocc/cosmocc.zip
+          if [ -f cosmocc.zip ]; then
+            unzip -q cosmocc.zip || true
+            if [ -x bin/cosmocc ]; then
+              chmod +x bin/cosmocc
+              echo "cosmocc=ok" >> $GITHUB_OUTPUT
+              echo "cosmocc downloaded successfully"
+            else
+              echo "cosmocc binary not found after unzip"
+              exit 1
+            fi
+          else
+            echo "cosmocc download failed"
+            exit 1
+          fi
 
       - name: Build Actually Portable Executable
+        if: steps.cosmocc.outputs.cosmocc == 'ok'
+        continue-on-error: true
         run: |
           ./cosmocc/bin/cosmocc -O2 -o shiftred.com shiftred.c
           ls -lh shiftred.com
@@ -39,17 +61,19 @@ jobs:
 
       - name: Build static Linux binary
         run: |
-          gcc -std=c99 -O2 -static -o shiftred-static shiftred.c -lm || true
-          ls -lh shiftred* || true
+          gcc -std=c99 -O2 -static -o shiftred-static shiftred.c -lm
+          ls -lh shiftred-static
+          file shiftred-static || true
+          ./shiftred-static --version || true
 
       - name: Upload APE binary (artifact)
+        if: hashFiles('shiftred.com') != ''
         uses: actions/upload-artifact@v4
         with:
           name: shiftred-ape
           path: shiftred.com
 
       - name: Upload static binary (artifact)
-        if: hashFiles('shiftred-static') != ''
         uses: actions/upload-artifact@v4
         with:
           name: shiftred-static
@@ -66,7 +90,7 @@ jobs:
           body: |
             Automated build of shiftred ${{ github.ref_name }}
 
-            - `shiftred.com` — Actually Portable Executable (cosmocc; runs on Linux/macOS/Windows/FreeBSD/etc.)
+            - `shiftred.com` — Actually Portable Executable (cosmocc; runs on Linux/macOS/Windows/FreeBSD/etc.) — present if cosmocc download succeeded
             - `shiftred-static` — static Linux x86_64 binary
 
             Requires a redshift binary (default `/usr/bin/redshift`, configurable via `~/.config/shiftred` or `REDSHIFT_PATH`).
