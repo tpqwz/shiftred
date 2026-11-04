@@ -3,14 +3,17 @@ name: Build shiftred
 on:
   push:
     branches: [ main ]
+    tags:
+      - 'v*'
+      - '0.*'
   pull_request:
     branches: [ main ]
-  release:
-    types: [ created ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -34,20 +37,42 @@ jobs:
           file shiftred.com || true
           ./shiftred.com --version || true
 
-      - name: Build static Linux binary (fallback)
+      - name: Build static Linux binary
         run: |
           gcc -std=c99 -O2 -static -o shiftred-static shiftred.c -lm || true
           ls -lh shiftred* || true
 
-      - name: Upload APE binary
+      - name: Upload APE binary (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: shiftred-ape
           path: shiftred.com
 
-      - name: Upload static binary
+      - name: Upload static binary (artifact)
         if: hashFiles('shiftred-static') != ''
         uses: actions/upload-artifact@v4
         with:
           name: shiftred-static
           path: shiftred-static
+
+      - name: Create GitHub Release with binaries
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            shiftred.com
+            shiftred-static
+          name: ${{ github.ref_name }}
+          body: |
+            Automated build of shiftred ${{ github.ref_name }}
+
+            - `shiftred.com` — Actually Portable Executable (cosmocc; runs on Linux/macOS/Windows/FreeBSD/etc.)
+            - `shiftred-static` — static Linux x86_64 binary
+
+            Requires a redshift binary (default `/usr/bin/redshift`, configurable via `~/.config/shiftred` or `REDSHIFT_PATH`).
+
+            Based on the original redshifter script by Tom Wizetek.
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
