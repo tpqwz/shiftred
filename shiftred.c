@@ -1,16 +1,17 @@
 /* shiftred.c - Portable C rewrite of the redshifter bash wrapper
  *
- * Single-file, TCC-friendly, aims for CERT C Secure Coding Standard
+ * Version: 0.9.0-beta (late beta)
+ *
+ * Single-file, TCC-friendly / cosmocc-friendly, aims for CERT C Secure Coding Standard
  * compliance (SEI CERT C, as many rules as practical in a small utility).
  *
  * Original script: https://github.com/wizetek/bash/blob/master/redshifter
  * (Tom Wizetek, GPL)
  *
- * Build (with Tiny C Compiler):
+ * Build examples:
  *   tcc -std=c99 -O2 -o shiftred shiftred.c -lm
- *
- * Or static portable binary:
  *   gcc -std=c99 -O2 -static -o shiftred shiftred.c -lm
+ *   cosmocc -O2 -o shiftred.com shiftred.c   # Actually Portable Executable
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -24,6 +25,7 @@
 #include <limits.h>
 
 /* CERT DCL00-C: avoid magic numbers */
+#define VERSION      "0.9.0-beta"
 #define CONF_DIR     ".config"
 #define PROG_NAME    "shiftred"
 #define REDSHIFT_BIN "/usr/bin/redshift"
@@ -123,7 +125,7 @@ static int cycle_temp(int current)
 
 static void show_help(const char *prog)
 {
-    printf("\n  %s [colortemp] [brightness]\n\n", prog);
+    printf("\n  %s %s [colortemp] [brightness]\n\n", prog, VERSION);
     printf("no argument = cycle through presets:\n");
     printf("\t\t6500K = Daylight\n");
     printf("\t\t5500K = Sunlight\n");
@@ -144,10 +146,19 @@ static void show_help(const char *prog)
     printf("  +\t\tincrease brightness by 0.02\n");
     printf("  0.1-1.0\tset specific brightness value\n");
     printf("  /\t\treset to default\n\n");
+    printf("Requires redshift (typically /usr/bin/redshift).\n");
 }
 
 int main(int argc, char **argv)
 {
+    /* Version flag */
+    if (argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
+        printf("%s %s\n", PROG_NAME, VERSION);
+        printf("Portable rewrite of redshifter by Tom Wizetek\n");
+        printf("https://github.com/wizetek/bash/blob/master/redshifter\n");
+        return 0;
+    }
+
     const char *home = getenv("HOME");
     if (home == NULL) {
         fprintf(stderr, "error: HOME not set\n");

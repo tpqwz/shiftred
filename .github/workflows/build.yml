@@ -1,0 +1,53 @@
+name: Build shiftred
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip gcc make
+
+      - name: Download cosmocc
+        run: |
+          mkdir -p cosmocc
+          cd cosmocc
+          wget -q https://cosmo.zip/pub/cosmocc/cosmocc.zip
+          unzip -q cosmocc.zip
+          chmod +x bin/cosmocc
+
+      - name: Build Actually Portable Executable
+        run: |
+          ./cosmocc/bin/cosmocc -O2 -o shiftred.com shiftred.c
+          ls -lh shiftred.com
+          file shiftred.com || true
+          ./shiftred.com --version || true
+
+      - name: Build static Linux binary (fallback)
+        run: |
+          gcc -std=c99 -O2 -static -o shiftred-static shiftred.c -lm || true
+          ls -lh shiftred* || true
+
+      - name: Upload APE binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiftred-ape
+          path: shiftred.com
+
+      - name: Upload static binary
+        if: hashFiles('shiftred-static') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiftred-static
+          path: shiftred-static
