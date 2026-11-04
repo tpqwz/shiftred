@@ -87,9 +87,16 @@ gcc -std=c99 -O2 -static -o shiftred shiftred.c -lm
 
 **Note:** The redshift binary path is configurable via `redshift_path=` in the config file or the `REDSHIFT_PATH` environment variable. Default is `/usr/bin/redshift`.
 
-## CI / Autobuild
+## CI / Releases
 
-GitHub Actions (`.github/workflows/build.yml`) automatically builds the cosmocc APE binary and a static Linux binary on every push to `main`. Artifacts are uploaded.
+GitHub Actions (`.github/workflows/build.yml`):
+
+- Builds the cosmocc APE binary and a static Linux binary on every push to `main` (artifacts available in the Actions run).
+- On version tags (`v*` or `0.*`), automatically creates a **GitHub Release** (prerelease for beta) and attaches:
+  - `shiftred.com` (Actually Portable Executable)
+  - `shiftred-static` (static Linux binary)
+
+Current release tag: `v0.9.0-beta`.
 
 ## License
 
