@@ -19,7 +19,20 @@ This project renames the tool to **shiftred** to clearly differentiate it from t
 - Static portable binary possible; APE binary runs on Linux/macOS/Windows/FreeBSD/etc.
 - Identical CLI and config behavior to the original redshifter
 - Config stored in `~/.config/shiftred`
+- Configurable redshift binary path
 - `-v` / `--version` flag
+
+## Configuration
+
+The file `~/.config/shiftred` is a simple key=value file:
+
+```
+colortemp=6500
+brightness=1.00
+redshift_path=/usr/local/bin/redshift   # optional; defaults to /usr/bin/redshift
+```
+
+You can also override the path with the environment variable `REDSHIFT_PATH`.
 
 ## Usage
 
@@ -72,7 +85,7 @@ tcc -std=c99 -O2 -o shiftred shiftred.c -lm
 gcc -std=c99 -O2 -static -o shiftred shiftred.c -lm
 ```
 
-**Note:** The program expects `redshift` at `/usr/bin/redshift` (Linux). On other platforms you will need a compatible redshift binary in that location or edit `REDSHIFT_BIN`.
+**Note:** The redshift binary path is configurable via `redshift_path=` in the config file or the `REDSHIFT_PATH` environment variable. Default is `/usr/bin/redshift`.
 
 ## CI / Autobuild
 

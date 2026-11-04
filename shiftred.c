@@ -12,6 +12,11 @@
  *   tcc -std=c99 -O2 -o shiftred shiftred.c -lm
  *   gcc -std=c99 -O2 -static -o shiftred shiftred.c -lm
  *   cosmocc -O2 -o shiftred.com shiftred.c   # Actually Portable Executable
+ *
+ * Config (~/.config/shiftred) supports:
+ *   colortemp=...
+ *   brightness=...
+ *   redshift_path=/path/to/redshift   # optional override
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -28,7 +33,7 @@
 #define VERSION      "0.9.0-beta"
 #define CONF_DIR     ".config"
 #define PROG_NAME    "shiftred"
-#define REDSHIFT_BIN "/usr/bin/redshift"
+#define DEFAULT_REDSHIFT "/usr/bin/redshift"
 #define TEMP_STEP    100
 #define BRIGHT_STEP  0.02
 #define MIN_TEMP     1000
@@ -37,7 +42,7 @@
 #define MAX_BRIGHT   1.0
 #define PRESET_COUNT 8
 #define MAX_PATH     4096
-#define BUF_SIZE     128
+#define BUF_SIZE     256
 
 static const int presets[PRESET_COUNT] = {
     6500, 5500, 4200, 3400, 2700, 2300, 1900, 1200
@@ -54,16 +59,25 @@ static int build_conf_path(char *buf, size_t buflen,
 }
 
 /* Load simple key=value config. Invalid values are ignored (CERT ERR33-C). */
-static void load_config(const char *path, int *temp, double *bright)
+static void load_config(const char *path, int *temp, double *bright, char *redshift_path, size_t pathlen)
 {
     *temp   = MAX_TEMP;
     *bright = MAX_BRIGHT;
+    /* Default redshift path */
+    if (pathlen > 0) {
+        strncpy(redshift_path, DEFAULT_REDSHIFT, pathlen - 1);
+        redshift_path[pathlen - 1] = '\0';
+    }
 
     FILE *f = fopen(path, "r");
     if (f == NULL) return;
 
     char line[BUF_SIZE];
     while (fgets(line, sizeof(line), f) != NULL) {
+        /* strip trailing newline */
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+
         if (strncmp(line, "colortemp=", 10) == 0) {
             char *end = NULL;
             long v = strtol(line + 10, &end, 10);
@@ -74,23 +88,37 @@ static void load_config(const char *path, int *temp, double *bright)
             double v = strtod(line + 11, &end);
             if (end != line + 11 && v >= MIN_BRIGHT && v <= MAX_BRIGHT)
                 *bright = v;
+        } else if (strncmp(line, "redshift_path=", 14) == 0) {
+            const char *val = line + 14;
+            if (*val != '\0' && pathlen > 0) {
+                strncpy(redshift_path, val, pathlen - 1);
+                redshift_path[pathlen - 1] = '\0';
+            }
         }
     }
     fclose(f);
+
+    /* Environment override (highest priority) */
+    const char *env = getenv("REDSHIFT_PATH");
+    if (env != NULL && *env != '\0' && pathlen > 0) {
+        strncpy(redshift_path, env, pathlen - 1);
+        redshift_path[pathlen - 1] = '\0';
+    }
 }
 
-static int save_config(const char *path, int temp, double bright)
+static int save_config(const char *path, int temp, double bright, const char *redshift_path)
 {
     FILE *f = fopen(path, "w");
     if (f == NULL) return -1;
-    /* %.2f matches typical bc output precision */
     int rc = fprintf(f, "colortemp=%d\nbrightness=%.2f\n", temp, bright);
+    if (redshift_path != NULL && strcmp(redshift_path, DEFAULT_REDSHIFT) != 0)
+        rc = fprintf(f, "redshift_path=%s\n", redshift_path);
     if (rc < 0 || fclose(f) != 0) return -1;
     return 0;
 }
 
 /* CERT ENV33-C: avoid system() with shell. Use fork/exec. */
-static int run_redshift(int temp, double bright)
+static int run_redshift(const char *bin, int temp, double bright)
 {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -102,7 +130,7 @@ static int run_redshift(int temp, double bright)
             _exit(1);
         if (snprintf(bbuf, sizeof(bbuf), "%.2f", bright) >= (int)sizeof(bbuf))
             _exit(1);
-        execl(REDSHIFT_BIN, "redshift", "-P", "-O", tbuf, "-b", bbuf, (char *)NULL);
+        execl(bin, "redshift", "-P", "-O", tbuf, "-b", bbuf, (char *)NULL);
         _exit(127);
     }
 
@@ -146,7 +174,8 @@ static void show_help(const char *prog)
     printf("  +\t\tincrease brightness by 0.02\n");
     printf("  0.1-1.0\tset specific brightness value\n");
     printf("  /\t\treset to default\n\n");
-    printf("Requires redshift (typically /usr/bin/redshift).\n");
+    printf("Config: ~/.config/shiftred (or REDSHIFT_PATH env)\n");
+    printf("  redshift_path=/path/to/redshift   # optional\n");
 }
 
 int main(int argc, char **argv)
@@ -178,7 +207,8 @@ int main(int argc, char **argv)
 
     int set_temp;
     double set_bright;
-    load_config(conf_path, &set_temp, &set_bright);
+    char redshift_path[MAX_PATH];
+    load_config(conf_path, &set_temp, &set_bright, redshift_path, sizeof(redshift_path));
 
     /* argv[2] = brightness */
     if (argc > 2 && argv[2] != NULL) {
@@ -237,12 +267,12 @@ int main(int argc, char **argv)
     if (set_bright < MIN_BRIGHT) set_bright = MIN_BRIGHT;
     if (set_bright > MAX_BRIGHT) set_bright = MAX_BRIGHT;
 
-    int rc = run_redshift(set_temp, set_bright);
+    int rc = run_redshift(redshift_path, set_temp, set_bright);
     if (rc != 0) {
-        fprintf(stderr, "redshift failed or not found (exit %d)\n", rc);
+        fprintf(stderr, "redshift failed or not found at '%s' (exit %d)\n", redshift_path, rc);
     }
 
-    if (save_config(conf_path, set_temp, set_bright) != 0) {
+    if (save_config(conf_path, set_temp, set_bright, redshift_path) != 0) {
         fprintf(stderr, "warning: failed to save config to %s\n", conf_path);
     }
 
